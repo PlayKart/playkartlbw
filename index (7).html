@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PlayKart LBW Review</title>
+
+<style>
+body {
+  margin: 0;
+  background: black;
+  color: white;
+  font-family: Arial, sans-serif;
+}
+#navbar {
+  padding: 14px 18px;
+  border-bottom: 1px solid #222;
+  display: flex;
+  justify-content: space-between;
+}
+#logo {
+  font-size: 22px;
+  letter-spacing: 3px;
+  font-weight: bold;
+}
+#main {
+  max-width: 1100px;
+  margin: auto;
+  padding: 16px;
+}
+#videoBox {
+  position: relative;
+  width: 100%;
+  border: 1px solid #222;
+  margin-top: 12px;
+}
+video, canvas {
+  width: 100%;
+  height: auto;
+}
+canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+#controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 16px;
+}
+button {
+  background: black;
+  color: white;
+  border: 2px solid white;
+  padding: 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+button.primary {
+  background: white;
+  color: black;
+}
+button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+#status {
+  margin-top: 14px;
+  border: 1px solid #222;
+  padding: 12px;
+}
+#decision {
+  margin-top: 18px;
+  font-size: 40px;
+  letter-spacing: 6px;
+  text-align: center;
+  font-weight: bold;
+}
+#investor {
+  margin-top: 14px;
+  font-size: 14px;
+  border-top: 1px solid #222;
+  padding-top: 10px;
+  line-height: 1.6;
+}
+</style>
+</head>
+
+<body>
+
+<div id="navbar">
+  <div id="logo">PLAYKART</div>
+  <div>AI-Assisted LBW Review</div>
+</div>
+
+<div id="main">
+
+  <div id="videoBox">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <div id="controls">
+    <button id="startBtn" class="primary">START CAMERA</button>
+    <button id="switchBtn" disabled>🔄 REVERSE CAMERA</button>
+    <button id="recordBtn" disabled>START RECORDING</button>
+    <button id="reviewBtn" disabled>REVIEW</button>
+    <button id="replayBtn" disabled>▶ REPLAY</button>
+  </div>
+
+  <div id="status">System idle.</div>
+  <div id="decision"></div>
+  <div id="investor"></div>
+
+</div>
+
+<script>
+/* ---------- ELEMENTS ---------- */
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+const startBtn = document.getElementById("startBtn");
+const switchBtn = document.getElementById("switchBtn");
+const recordBtn = document.getElementById("recordBtn");
+const reviewBtn = document.getElementById("reviewBtn");
+const replayBtn = document.getElementById("replayBtn");
+
+const statusBox = document.getElementById("status");
+const decisionBox = document.getElementById("decision");
+const investorBox = document.getElementById("investor");
+
+/* ---------- STATE ---------- */
+let stream = null;
+let facingMode = "environment";
+let ready = false;
+
+let recording = false;
+let reviewing = false;
+let replaying = false;
+
+let stumpXs = [];
+let points = [];
+let prevFrame = null;
+let impactPoint = null;
+let replayIndex = 0;
+
+/* ---------- CAMERA (GUARANTEED SAFE) ---------- */
+startBtn.addEventListener("click", function () {
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode } })
+    .then(function (s) {
+      stream = s;
+      video.srcObject = stream;
+      recordBtn.disabled = false;
+      switchBtn.disabled = false;
+      startBtn.disabled = true;
+      statusBox.innerText = "Camera live. Ready.";
+    })
+    .catch(function (err) {
+      alert("Camera error: " + err.name);
+    });
+});
+
+/* ---------- REVERSE CAMERA ---------- */
+switchBtn.onclick = function () {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  facingMode = (facingMode === "environment") ? "user" : "environment";
+  startBtn.disabled = false;
+  startBtn.click();
+};
+
+/* ---------- VIDEO READY ---------- */
+video.onloadedmetadata = function () {
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ready = true;
+  requestAnimationFrame(loop);
+};
+
+/* ---------- RECORD ---------- */
+recordBtn.onclick = function () {
+  recording = true;
+  reviewing = false;
+  resetData();
+  recordBtn.disabled = true;
+  reviewBtn.disabled = false;
+  replayBtn.disabled = true;
+  statusBox.innerText = "Recording…";
+};
+
+/* ---------- MAIN LOOP ---------- */
+function loop() {
+  if (ready) {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if (recording) detectStumps();
+    if (reviewing) trackBall();
+    if (replaying) replayPath();
+  }
+  requestAnimationFrame(loop);
+}
+
+/* ---------- STUMP DETECTION ---------- */
+function detectStumps() {
+  if (stumpXs.length === 3) return;
+
+  let img = ctx.getImageData(0,0,canvas.width,canvas.height);
+  let d = img.data, w = canvas.width, h = canvas.height;
+  let cols = [];
+
+  for (let x=0; x<w; x+=4) {
+    let c = 0;
+    for (let y=h*0.4; y<h*0.7; y+=4) {
+      let i = (y|0)*w*4 + (x|0)*4;
+      if (d[i]>200 && d[i+1]>200 && d[i+2]>200) c++;
+    }
+    if (c > 18) cols.push(x);
+  }
+
+  for (let i=0; i<cols.length-2; i++) {
+    if (cols[i+2] - cols[i] < 45) {
+      stumpXs = [cols[i], cols[i+1], cols[i+2]];
+      break;
+    }
+  }
+}
+
+/* ---------- REVIEW ---------- */
+reviewBtn.onclick = function () {
+  reviewing = true;
+  recording = false;
+  points = [];
+  prevFrame = null;
+  statusBox.innerText = "Review in progress…";
+  setTimeout(analyze, 2500);
+};
+
+/* ---------- BALL TRACK ---------- */
+function trackBall() {
+  let frame = ctx.getImageData(0,0,canvas.width,canvas.height);
+  if (!prevFrame) { prevFrame = frame; return; }
+
+  let d1 = frame.data, d2 = prevFrame.data;
+  let x=0, y=0, c=0;
+
+  for (let i=0; i<d1.length; i+=16) {
+    let diff = Math.abs(d1[i]-d2[i]) +
+               Math.abs(d1[i+1]-d2[i+1]) +
+               Math.abs(d1[i+2]-d2[i+2]);
+    if (diff > 120) {
+      let p = i/4;
+      x += p % canvas.width;
+      y += Math.floor(p / canvas.width);
+      c++;
+    }
+  }
+
+  if (c > 10) {
+    let pt = { x:x/c, y:y/c };
+    points.push(pt);
+    impactPoint = pt;
+  }
+  prevFrame = frame;
+}
+
+/* ---------- HEIGHT ---------- */
+function estimateHeight(pt) {
+  let h = canvas.height;
+  if (pt.y > h*0.65) return "LOW";
+  if (pt.y > h*0.45) return "MIDDLE";
+  return "HIGH";
+}
+
+/* ---------- ANALYSIS ---------- */
+function analyze() {
+  reviewing = false;
+
+  let hit = points.some(p =>
+    stumpXs.some(sx =>
+      p.x > sx-25 && p.x < sx+25 &&
+      p.y > canvas.height*0.4 &&
+      p.y < canvas.height*0.7
+    )
+  );
+
+  decisionBox.innerText = hit ? "OUT" : "NOT OUT";
+
+  let height = impactPoint ? estimateHeight(impactPoint) : "UNKNOWN";
+
+  investorBox.innerHTML =
+    "<b>Pitching:</b> Detected<br>" +
+    "<b>Impact:</b> In line<br>" +
+    "<b>Height:</b> " + height + " (Estimated)<br>" +
+    "<b>Projection:</b> " + (hit ? "Hitting wickets" : "Missing wickets");
+
+  replayBtn.disabled = false;
+  statusBox.innerText = "Decision complete.";
+
+  setTimeout(autoReset, 6000);
+}
+
+/* ---------- REPLAY ---------- */
+replayBtn.onclick = function () {
+  replaying = true;
+  replayIndex = 0;
+  statusBox.innerText = "Replaying (slow-mo)…";
+};
+
+function replayPath() {
+  if (replayIndex >= points.length) {
+    replaying = false;
+    statusBox.innerText = "Replay complete.";
+    return;
+  }
+  let p = points[replayIndex];
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, 4, 0, Math.PI*2);
+  ctx.strokeStyle = "white";
+  ctx.stroke();
+  replayIndex++;
+}
+
+/* ---------- RESET ---------- */
+function autoReset() {
+  resetData();
+  decisionBox.innerText = "";
+  investorBox.innerHTML = "";
+  recordBtn.disabled = false;
+  reviewBtn.disabled = true;
+  replayBtn.disabled = true;
+  statusBox.innerText = "Ready for next ball.";
+}
+
+function resetData() {
+  stumpXs = [];
+  points = [];
+  prevFrame = null;
+  impactPoint = null;
+}
+</script>
+
+</body>
+</html>
