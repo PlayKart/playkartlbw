@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PlayKart LBW - AI Predictor</title>
+
+<style>
+body { margin: 0; background: #0a0a0a; color: white; font-family: 'Segoe UI', Arial, sans-serif; overflow-x: hidden; }
+#navbar { padding: 15px 20px; border-bottom: 2px solid #333; display: flex; justify-content: space-between; align-items: center; background: #000; }
+#logo { font-size: 20px; letter-spacing: 4px; font-weight: 900; color: #fff; }
+#main { max-width: 1000px; margin: auto; padding: 15px; }
+#videoBox { position: relative; width: 100%; border-radius: 8px; overflow: hidden; border: 2px solid #222; background: #000; line-height: 0; }
+video, canvas { width: 100%; height: auto; }
+canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+#controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 15px; }
+button { background: #1a1a1a; color: white; border: 1px solid #444; padding: 12px; font-size: 13px; font-weight: bold; cursor: pointer; transition: 0.2s; border-radius: 4px; }
+button.primary { background: #fff; color: #000; border: none; }
+button:hover:not(:disabled) { background: #333; }
+button.primary:hover:not(:disabled) { background: #ddd; }
+button:disabled { opacity: 0.2; cursor: not-allowed; }
+#status { margin-top: 12px; font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+#decision { margin-top: 15px; font-size: 52px; letter-spacing: 8px; text-align: center; font-weight: 900; height: 60px; text-shadow: 0 0 20px rgba(255,255,255,0.2); }
+#investor { margin-top: 15px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: #111; padding: 15px; border-radius: 8px; font-size: 13px; border: 1px solid #222; }
+.stat-label { color: #666; font-size: 11px; text-transform: uppercase; }
+.stat-value { color: #fff; font-weight: bold; margin-bottom: 5px; }
+</style>
+</head>
+
+<body>
+
+<div id="navbar">
+  <div id="logo">PLAYKART <span style="font-weight:100; font-size: 14px; color: #ff3e3e;">TECH</span></div>
+  <div style="font-size: 12px; color: #888;">LBW PREDICTOR V2.0</div>
+</div>
+
+<div id="main">
+  <div id="videoBox">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <div id="controls">
+    <button id="startBtn" class="primary">START CAMERA</button>
+    <button id="switchBtn" disabled>REVERSE</button>
+    <button id="recordBtn" disabled>RECORD BALL</button>
+    <button id="reviewBtn" disabled>ANALYZE</button>
+    <button id="replayBtn" disabled>WATCH REPLAY</button>
+  </div>
+
+  <div id="status">System initialization required...</div>
+  
+  <div id="decision"></div>
+
+  <div id="investor">
+    <div>
+      <div class="stat-label">Pitching</div><div id="res-pitch" class="stat-value">-</div>
+      <div class="stat-label">Impact</div><div id="res-impact" class="stat-value">-</div>
+    </div>
+    <div>
+      <div class="stat-label">Height</div><div id="res-height" class="stat-value">-</div>
+      <div class="stat-label">Path Prediction</div><div id="res-path" class="stat-value">-</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------------- ENGINE CORE ---------------- */
+let audioCtx = null;
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+// Elements
+const startBtn = document.getElementById("startBtn");
+const switchBtn = document.getElementById("switchBtn");
+const recordBtn = document.getElementById("recordBtn");
+const reviewBtn = document.getElementById("reviewBtn");
+const replayBtn = document.getElementById("replayBtn");
+const decisionBox = document.getElementById("decision");
+const statusBox = document.getElementById("status");
+
+// Logic State
+let stream = null;
+let facingMode = "environment";
+let ready = false;
+let recording = false;
+let reviewing = false;
+let replaying = false;
+
+let stumpXs = [];
+let ballPoints = [];
+let prevFrame = null;
+let replayIndex = 0;
+let projectionPoint = null;
+
+function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+function beep(f, d) { if (!audioCtx) return; let o = audioCtx.createOscillator(), g = audioCtx.createGain(); o.frequency.value = f; o.connect(g); g.connect(audioCtx.destination); o.start(); g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + d); o.stop(audioCtx.currentTime + d); }
+
+/* ---------------- CAMERA & TRACKING ---------------- */
+startBtn.onclick = () => {
+  initAudio();
+  beep(600, 0.1);
+  navigator.mediaDevices.getUserMedia({ video: { facingMode, frameRate: { ideal: 60 } } })
+    .then(s => {
+      stream = s;
+      video.srcObject = stream;
+      startBtn.disabled = true;
+      recordBtn.disabled = false;
+      switchBtn.disabled = false;
+      statusBox.innerText = "System Live. Align stumps in frame.";
+    });
+};
+
+switchBtn.onclick = () => {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  facingMode = facingMode === "environment" ? "user" : "environment";
+  startBtn.disabled = false; startBtn.click();
+};
+
+video.onloadedmetadata = () => {
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ready = true;
+  requestAnimationFrame(loop);
+};
+
+function loop() {
+  if (!ready) return requestAnimationFrame(loop);
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  
+  if (recording) {
+    detectStumps();
+    trackBall();
+  }
+  
+  if (replaying) drawReplayFrame();
+  
+  requestAnimationFrame(loop);
+}
+
+function detectStumps() {
+  if (stumpXs.length === 3) return;
+  let img = ctx.getImageData(0,0,canvas.width,canvas.height), d = img.data;
+  let cols = [];
+  for (let x=0; x<canvas.width; x+=5) {
+    let count = 0;
+    for (let y=canvas.height*0.4; y<canvas.height*0.7; y+=5) {
+      let i = (Math.floor(y)*canvas.width + x)*4;
+      if (d[i]>200 && d[i+1]>200 && d[i+2]>200) count++;
+    }
+    if (count > 15) cols.push(x);
+  }
+  for (let i=0; i<cols.length-2; i++) {
+    if (cols[i+2] - cols[i] < 50) {
+      stumpXs = [cols[i], cols[i+1], cols[i+2]];
+      break;
+    }
+  }
+}
+
+function trackBall() {
+  let frame = ctx.getImageData(0,0,canvas.width,canvas.height);
+  if (!prevFrame) { prevFrame = frame; return; }
+  let d1 = frame.data, d2 = prevFrame.data;
+  let x=0, y=0, c=0;
+  for (let i=0; i<d1.length; i+=32) {
+    let diff = Math.abs(d1[i]-d2[i]) + Math.abs(d1[i+1]-d2[i+1]) + Math.abs(d1[i+2]-d2[i+2]);
+    if (diff > 100) {
+      let p = i/4;
+      x += p % canvas.width;
+      y += Math.floor(p / canvas.width);
+      c++;
+    }
+  }
+  if (c > 5) ballPoints.push({ x: x/c, y: y/c });
+  prevFrame = frame;
+}
+
+/* ---------------- BUTTON ACTIONS ---------------- */
+recordBtn.onclick = () => {
+  recording = true; ballPoints = []; stumpXs = []; projectionPoint = null;
+  recordBtn.disabled = true; reviewBtn.disabled = false;
+  statusBox.innerText = "TRACKING DATA...";
+  beep(800, 0.1);
+};
+
+reviewBtn.onclick = () => {
+  recording = false;
+  statusBox.innerText = "CALCULATING TRAJECTORY...";
+  beep(400, 0.2);
+  setTimeout(analyze, 1500);
+};
+
+/* ---------------- PREDICTIVE ANALYSIS ---------------- */
+function analyze() {
+  if (ballPoints.length < 3) {
+    statusBox.innerText = "Incomplete data. Try again.";
+    recordBtn.disabled = false; return;
+  }
+
+  // Linear Prediction Logic
+  let impact = ballPoints[ballPoints.length - 1];
+  let prev = ballPoints[ballPoints.length - 4] || ballPoints[0];
+  
+  // Calculate movement vector (delta)
+  let dx = impact.x - prev.x;
+  let dy = impact.y - prev.y;
+
+  // Project the point where the ball reaches the stump line
+  projectionPoint = { x: impact.x + (dx * 12), y: impact.y + (dy * 12) };
+
+  // Decision logic
+  let isHitting = false;
+  if (stumpXs.length === 3) {
+    let margin = 30;
+    // Check if projected X is within stump bounds
+    if (projectionPoint.x >= stumpXs[0]-margin && projectionPoint.x <= stumpXs[2]+margin) {
+      // Check if it's hitting the stumps height-wise
+      if (projectionPoint.y > canvas.height*0.2 && projectionPoint.y < canvas.height*0.8) {
+        isHitting = true;
+      }
+    }
+  }
+
+  // Display Results
+  decisionBox.innerText = isHitting ? "OUT" : "NOT OUT";
+  decisionBox.style.color = isHitting ? "#ff3e3e" : "#00ff88";
+  
+  document.getElementById("res-pitch").innerText = "IN LINE";
+  document.getElementById("res-impact").innerText = (impact.x > (stumpXs[0]||0)-40 && impact.x < (stumpXs[2]||0)+40) ? "IN LINE" : "OUTSIDE";
+  document.getElementById("res-height").innerText = impact.y > canvas.height*0.6 ? "LOW" : "GOOD";
+  document.getElementById("res-path").innerText = isHitting ? "HITTING WICKETS" : "MISSING";
+
+  replayBtn.disabled = false;
+  statusBox.innerText = "Review Ready.";
+  beep(isHitting ? 1000 : 300, 0.4);
+}
+
+/* ---------------- REPLAY RENDERER ---------------- */
+replayBtn.onclick = () => {
+  replaying = true; replayIndex = 0;
+  statusBox.innerText = "REPLAY: SLOW MOTION";
+};
+
+function drawReplayFrame() {
+  if (replayIndex < ballPoints.length) {
+    let p = ballPoints[replayIndex];
+    ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, Math.PI*2);
+    ctx.fillStyle = "rgba(255,255,255,0.8)"; ctx.fill();
+    replayIndex++;
+  } else if (projectionPoint) {
+    // Draw the "Virtual" Path
+    let impact = ballPoints[ballPoints.length-1];
+    ctx.beginPath();
+    ctx.moveTo(impact.x, impact.y);
+    ctx.lineTo(projectionPoint.x, projectionPoint.y);
+    ctx.strokeStyle = "#ff3e3e";
+    ctx.lineWidth = 4;
+    ctx.setLineDash([5, 5]);
+    ctx.stroke();
+    
+    // Draw Virtual Ball at end
+    ctx.beginPath(); ctx.arc(projectionPoint.x, projectionPoint.y, 8, 0, Math.PI*2);
+    ctx.fillStyle = "#ff3e3e"; ctx.fill();
+    
+    setTimeout(() => { 
+        replaying = false; 
+        statusBox.innerText = "Analysis Finished.";
+        recordBtn.disabled = false;
+    }, 2000);
+  }
+}
+</script>
+
+</body>
+</html>
